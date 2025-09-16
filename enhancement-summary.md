@@ -47,3 +47,59 @@
 5. Guided user flow for completing profile information
 
 These enhancements make Civic Pulse more secure, user-friendly, and professional while maintaining compatibility with the existing system.
+
+## Issue Clustering, Reporter Consent & Group Chat (New)
+
+### Goals
+Prevent duplicate issues inside 100m, aggregate reporters, request consent for participation in shared discussion, and auto-adjust priority based on collective interest.
+
+### Data Model Changes
+Issue schema additions:
+- mergedInto: ObjectId reference to canonical issue (if this is a duplicate)
+- duplicates: [ObjectId] listing merged duplicates on the canonical
+- reporters: [{ user, consent, joinedAt }] (legacy array of ObjectIds migrated via scripts/migrateReporters.js)
+- thumbnailImage: First image of the earliest report (or first available) used as issue thumbnail
+
+### Creation & Merging Flow
+1. New report saved.
+2. System searches for existing canonical issue in same category within 100m (geoWithin); if none, fallback bounding-box + Haversine.
+3. If match:
+   - New report marked duplicate (mergedInto set).
+   - Reporter added to canonical reporters with consent = null.
+   - votes incremented (auto up-vote) if reporter not already a voter.
+   - Priority recomputed.
+   - Socket event issueConsentRequest emitted ONLY to that user (personal room joining via socket auth userId).
+4. If no match: new issue remains canonical and its first image becomes thumbnail.
+
+### Consent Workflow
+Socket emits to user room: issueConsentRequest { issueId, thumbnail, message }.
+Frontend prompts user. User calls POST /api/issues/:id/consent { accept: true|false }.
+On update backend emits issueConsentUpdated to the user room.
+Only reporters with consent === true (or the original creator or government users) may post messages in chat.
+
+### Chat Changes
+- Chat endpoints always resolve to canonical issue.
+- Post message requires government role or consenting reporter.
+- Messages stored under IssueChatMessage with canonical issue id.
+
+### Listing & Detail Enhancements
+Government & detail responses now include:
+- reportersCount & consentingReportersCount
+- duplicatesCount
+- thumbnailImage
+
+### Migration
+Run: node scripts/migrateReporters.js to convert legacy reporters array into structured reporter objects.
+
+### Socket Rooms
+On connection client provides auth userId, server joins personal room (userId). Consent and targeted notifications emitted to this room.
+
+### New Endpoints
+POST /api/issues/:id/consent -> record reporter decision.
+POST /api/issues/cluster/retroactive -> (government) retroactive dedupe scan.
+
+### Future Ideas
+- Auto-escalate priority tiers based on consentingReportersCount thresholds.
+- Allow reporters to revoke consent.
+- Provide public aggregate metrics without exposing identities.
+

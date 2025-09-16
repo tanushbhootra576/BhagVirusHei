@@ -3,6 +3,7 @@ const User = require('../models/User');
 const { validationResult } = require('express-validator');
 const { computePriority } = require('../utils/priority');
 const { uploadBuffer } = require('../config/cloudinary');
+const { log, warn, error } = require('../utils/logger');
 
 class IssueController {
     // Get all issues with comprehensive filtering and pagination
@@ -82,9 +83,9 @@ class IssueController {
                 ]
             };
 
-            console.log('[GOV getAllIssues] filter=', JSON.stringify(filter));
+            log('[GOV getAllIssues] START page=', page, 'limit=', limit, 'filter=', JSON.stringify(filter));
             const issues = await Issue.paginate(filter, options);
-            console.log('[GOV getAllIssues] fetched canonical count=', issues.docs.length, 'totalDocsRaw=', issues.totalDocs);
+            log('[GOV getAllIssues] fetched canonical count=', issues.docs.length, 'totalDocsRaw=', issues.totalDocs);
             // Quick heuristic: find possible near duplicates not merged (same category, < 120m) for debugging
             try {
                 const sample = issues.docs.slice(0, 50); // limit debug cost
@@ -101,20 +102,26 @@ class IssueController {
                         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
                         const dist = 6378137 * c;
                         if (dist < 120) {
-                            console.log('[GOV getAllIssues][DEBUG] Close canonical pair not merged', A._id.toString(), B._id.toString(), 'dist(m)=', Math.round(dist));
+                            log('[GOV getAllIssues][DEBUG] Close canonical pair not merged', A._id.toString(), B._id.toString(), 'dist(m)=', Math.round(dist));
                         }
                     }
                 }
             } catch (dbgErr) {
-                console.log('[GOV getAllIssues][DEBUG] proximity scan failed', dbgErr.message);
+                warn('[GOV getAllIssues][DEBUG] proximity scan failed', dbgErr.message);
             }
 
             // Enrich with reporters count and duplicates count
-            const enriched = issues.docs.map(doc => ({
-                ...doc.toObject(),
-                reportersCount: (doc.reporters || []).length,
-                duplicatesCount: (doc.duplicates || []).length
-            }));
+            const enriched = issues.docs.map(doc => {
+                const reportersArr = doc.reporters || [];
+                const consenting = reportersArr.filter(r => r.consent === true).length;
+                return {
+                    ...doc.toObject(),
+                    reportersCount: reportersArr.length,
+                    consentingReportersCount: consenting,
+                    duplicatesCount: (doc.duplicates || []).length,
+                    thumbnailImage: doc.thumbnailImage || (doc.images?.[0] || null)
+                };
+            });
 
             res.json({
                 success: true,
@@ -127,7 +134,7 @@ class IssueController {
                 }
             });
         } catch (error) {
-            console.error('Error fetching issues:', error);
+            error('Error fetching issues:', error);
             res.status(500).json({
                 success: false,
                 error: 'Failed to fetch issues',
@@ -188,6 +195,34 @@ class IssueController {
             return res.json({ success: true, mergedPairs: mergeOps });
         } catch (e) {
             console.error('[retroactiveCluster] error', e);
+            res.status(500).json({ success: false, error: e.message });
+        }
+    }
+
+    // Record reporter consent for merged-in participation and chat access
+    async recordConsent(req, res) {
+        try {
+            const { id } = req.params; // canonical or duplicate id
+            const { accept } = req.body;
+            if (typeof accept !== 'boolean') {
+                return res.status(400).json({ success: false, error: 'accept boolean required' });
+            }
+            let issue = await Issue.findById(id).select('_id mergedInto reporters votes voters').exec();
+            if (!issue) return res.status(404).json({ success: false, error: 'Issue not found' });
+            if (issue.mergedInto) issue = await Issue.findById(issue.mergedInto).select('_id reporters votes voters').exec();
+            const userId = req.user.id;
+            const entry = issue.reporters.find(r => r.user?.toString() === userId);
+            if (!entry) {
+                return res.status(403).json({ success: false, error: 'You are not a reporter on this issue' });
+            }
+            // Only update if currently null or different
+            entry.consent = accept;
+            await issue.save();
+            // Notify user of confirmation
+            req.io?.to(userId.toString()).emit('issueConsentUpdated', { issueId: issue._id, consent: accept });
+            return res.json({ success: true, data: { issueId: issue._id, consent: accept } });
+        } catch (e) {
+            console.error('[recordConsent] error', e);
             res.status(500).json({ success: false, error: e.message });
         }
     }
@@ -257,12 +292,12 @@ class IssueController {
                 return res.status(403).json({ success: false, error: 'Forbidden' });
             }
             console.log('[getAllIssuesFull] user:', req.user.id, 'role:', req.user.role, 'time:', new Date().toISOString());
-            console.log('[GOV getAllIssuesFull] fetching canonical issues only');
+            log('[GOV getAllIssuesFull] fetching canonical issues only');
             const issues = await Issue.find({ mergedInto: { $exists: false } })
                 .sort({ createdAt: -1 })
                 .populate('reportedBy', 'name email role')
                 .lean();
-            console.log('[GOV getAllIssuesFull] result count=', issues.length);
+            log('[GOV getAllIssuesFull] result count=', issues.length);
 
             console.log('[getAllIssuesFull] total issues found:', issues.length);
 
@@ -278,12 +313,14 @@ class IssueController {
                 date: doc.createdAt,
                 votes: doc.votes || 0,
                 reportersCount: (doc.reporters || []).length,
-                duplicatesCount: (doc.duplicates || []).length
+                consentingReportersCount: (doc.reporters || []).filter(r => r.consent === true).length,
+                duplicatesCount: (doc.duplicates || []).length,
+                thumbnailImage: doc.thumbnailImage || (doc.images?.[0] || null)
             }));
 
             res.json({ success: true, data });
         } catch (error) {
-            console.error('Error fetching full issue list:', error);
+            error('Error fetching full issue list:', error);
             res.status(500).json({ success: false, error: 'Failed to fetch issues', message: error.message });
         }
     }
@@ -291,24 +328,24 @@ class IssueController {
     // Create new issue
     async createIssue(req, res) {
         try {
-            console.log('[CTRL createIssue] START ------------------------------------------------');
-            console.log('[CTRL createIssue] Time:', new Date().toISOString());
-            console.log('[CTRL createIssue] Content-Type:', req.headers['content-type']);
-            console.log('[CTRL createIssue] Auth user object:', req.user ? { id: req.user.id, role: req.user.role, email: req.user.email } : 'NONE');
-            console.log('[CTRL createIssue] Raw body keys:', Object.keys(req.body || {}));
-            console.log('[CTRL createIssue] Incoming body snippet:', JSON.stringify({
+            log('[CTRL createIssue] START ------------------------------------------------');
+            log('[CTRL createIssue] Time:', new Date().toISOString());
+            log('[CTRL createIssue] Content-Type:', req.headers['content-type']);
+            log('[CTRL createIssue] Auth user object:', req.user ? { id: req.user.id, role: req.user.role, email: req.user.email } : 'NONE');
+            log('[CTRL createIssue] Raw body keys:', Object.keys(req.body || {}));
+            log('[CTRL createIssue] Incoming body snippet:', JSON.stringify({
                 title: req.body?.title,
                 category: req.body?.category,
                 hasLocation: !!req.body?.location,
                 locationLength: req.body?.location ? String(req.body.location).length : 0
             }));
-            console.log('[CTRL createIssue] Files summary:', {
+            log('[CTRL createIssue] Files summary:', {
                 images: Array.isArray(req.files?.images) ? req.files.images.map(f => ({ name: f.filename, size: f.size })) : [],
                 voiceNote: Array.isArray(req.files?.voiceNote) ? req.files.voiceNote.map(f => ({ name: f.filename, size: f.size })) : []
             });
             const errors = validationResult(req);
             if (!errors.isEmpty()) {
-                console.log('[CTRL createIssue] Validation errors:', errors.array());
+                    warn('[CTRL createIssue] Validation errors:', errors.array());
                 return res.status(400).json({
                     success: false,
                     errors: errors.array()
@@ -326,35 +363,35 @@ class IssueController {
                 // Handle file uploads OR already-uploaded Cloudinary URLs sent from frontend
                 let images = [];
                 if (req.files?.images) {
-                    console.log('[CTRL createIssue] Detected', req.files.images.length, 'image file(s) for server-side Cloudinary upload');
+                    log('[CTRL createIssue] Detected', req.files.images.length, 'image file(s) for server-side Cloudinary upload');
                     const uploadPromises = req.files.images.map(async (file, idx) => {
                         const label = file.originalname || `buffer-${idx}`;
                         const start = Date.now();
                         try {
-                            console.log(`[CTRL createIssue] [Upload->Cloudinary] START name=${label} size=${file.size}B type=${file.mimetype}`);
+                            log(`[CTRL createIssue] [Upload->Cloudinary] START name=${label} size=${file.size}B type=${file.mimetype}`);
                             const result = await uploadBuffer(file.buffer, 'issues', label, file.mimetype);
                             const ms = Date.now() - start;
-                            console.log(`[CTRL createIssue] [Upload->Cloudinary] SUCCESS name=${label} url=${result.secure_url} bytes=${file.size} timeMs=${ms}`);
+                            log(`[CTRL createIssue] [Upload->Cloudinary] SUCCESS name=${label} url=${result.secure_url} bytes=${file.size} timeMs=${ms}`);
                             return result.secure_url;
                         } catch (e) {
                             const ms = Date.now() - start;
-                            console.error(`[CTRL createIssue] [Upload->Cloudinary] FAIL name=${label} timeMs=${ms} err=${e.message}`);
+                            error(`[CTRL createIssue] [Upload->Cloudinary] FAIL name=${label} timeMs=${ms} err=${e.message}`);
                             return null;
                         }
                     });
                     const uploaded = await Promise.all(uploadPromises);
                     images = uploaded.filter(Boolean);
                     const failed = req.files.images.length - images.length;
-                    console.log('[CTRL createIssue] Cloudinary upload summary: success=', images.length, 'failed=', failed);
+                    log('[CTRL createIssue] Cloudinary upload summary: success=', images.length, 'failed=', failed);
                     if (images.length === 0) {
-                        console.warn('[CTRL createIssue] WARNING: All Cloudinary uploads failed. Check credentials and network.', {
+                        warn('[CTRL createIssue] WARNING: All Cloudinary uploads failed. Check credentials and network.', {
                             hasCloudName: !!process.env.CLOUDINARY_CLOUD_NAME,
                             hasApiKey: !!process.env.CLOUDINARY_API_KEY,
                             hasApiSecret: !!process.env.CLOUDINARY_API_SECRET
                         });
                     }
                 } else if (req.body.images || req.body.imageUrls) {
-                    console.log('[CTRL createIssue] Using client-provided image URL path (no file buffers)');
+                    log('[CTRL createIssue] Using client-provided image URL path (no file buffers)');
                     // Accept either a JSON string or an array
                     const raw = req.body.images || req.body.imageUrls;
                     try {
@@ -364,13 +401,13 @@ class IssueController {
                             images = raw;
                         }
                     } catch (e) {
-                        console.log('[CTRL createIssue] Failed to parse incoming image URLs:', e.message);
+                        warn('[CTRL createIssue] Failed to parse incoming image URLs:', e.message);
                     }
                     if (!Array.isArray(images)) images = [];
                     // Basic URL validation
                     const beforeFilter = images.length;
                     images = images.filter(u => typeof u === 'string' && /^https?:\/\//.test(u));
-                    console.log('[CTRL createIssue] Accepted', images.length, 'URL(s); filtered out', beforeFilter - images.length);
+                    log('[CTRL createIssue] Accepted', images.length, 'URL(s); filtered out', beforeFilter - images.length);
                 }
                 // Voice note: (optional) still on disk approach not supported now; future: upload to cloudinary with resource_type: 'video' or 'raw'
                 const voiceNote = null;
@@ -392,7 +429,7 @@ class IssueController {
                     }
                 }
             } catch (e) {
-                console.log('[CTRL createIssue] Location parse error. Raw value:', location, 'err:', e.message);
+                        warn('[CTRL createIssue] Location parse error. Raw value:', location, 'err:', e.message);
                 return res.status(400).json({ success: false, message: 'Invalid location format' });
             }
 
@@ -405,24 +442,24 @@ class IssueController {
                     const lngNum = parseFloat(rawLng);
                     if (!isNaN(latNum) && !isNaN(lngNum)) {
                         locationData.coordinates = [lngNum, latNum]; // GeoJSON expects [lng, lat]
-                        console.log('[CTRL createIssue] Derived coordinates from separate fields');
+                        log('[CTRL createIssue] Derived coordinates from separate fields');
                     }
                 } else if (locationData.lat && locationData.lng) {
                     const latNum = parseFloat(locationData.lat);
                     const lngNum = parseFloat(locationData.lng);
                     if (!isNaN(latNum) && !isNaN(lngNum)) {
                         locationData.coordinates = [lngNum, latNum];
-                        console.log('[CTRL createIssue] Derived coordinates from locationData.lat/lng');
+                        log('[CTRL createIssue] Derived coordinates from locationData.lat/lng');
                     }
                 }
             }
 
             if (!locationData || !Array.isArray(locationData.coordinates) || locationData.coordinates.length !== 2) {
-                console.log('[CTRL createIssue] Missing or invalid coordinates in locationData (will reject). Provided:', locationData);
+                warn('[CTRL createIssue] Missing or invalid coordinates in locationData (will reject). Provided:', locationData);
                 return res.status(400).json({ success: false, message: 'Location coordinates required (lng,lat)' });
             }
             if (!locationData.address) {
-                console.log('[CTRL createIssue] Missing address field in locationData. Provided object:', locationData);
+                log('[CTRL createIssue] Missing address field in locationData. Provided object:', locationData);
                 // Not fatal yet, but supply placeholder address to satisfy schema
                 locationData.address = 'Address not specified';
             }
@@ -446,6 +483,7 @@ class IssueController {
                 voiceNote,
                 reportedBy: req.user.id,
                 priority,
+                // reporters array now handled by pre-save hook (adds creator with consent true)
                 estimatedResolutionTime: estimatedTime,
                 statusHistory: [{
                     status: 'pending',
@@ -461,9 +499,9 @@ class IssueController {
 
             try {
                 await issue.save();
-                console.log('[CTRL createIssue] Issue saved with _id:', issue._id);
+                log('[CTRL createIssue] Issue saved with _id:', issue._id);
             } catch (saveErr) {
-                console.log('[CTRL createIssue] Mongoose save error:', saveErr.message);
+                error('[CTRL createIssue] Mongoose save error:', saveErr.message);
                 if (saveErr.name === 'ValidationError') {
                     const fieldErrors = Object.keys(saveErr.errors).map(k => ({ field: k, message: saveErr.errors[k].message }));
                     console.log('[CTRL createIssue] Validation errors detailed:', fieldErrors);
@@ -472,6 +510,8 @@ class IssueController {
                 return res.status(500).json({ success: false, message: 'Database save failed', error: saveErr.message });
             }
             await issue.populate([{ path: 'reportedBy', select: 'name email phone' }]);
+            // Preserve raw reporter id for socket room targeting before population side-effects
+            const reporterId = req.user.id;
 
             // Duplicate merge logic: find existing canonical issue in same category within 100m
             try {
@@ -489,7 +529,7 @@ class IssueController {
 
                 // Fallback 1: bounding box + manual haversine if geoWithin returns nothing (possible index issues)
                 if (!nearbyCanonical) {
-                    console.log('[CTRL createIssue] MERGE: geoWithin found none, running fallback bounding-box scan');
+                    log('[CTRL createIssue] MERGE: geoWithin found none, running fallback bounding-box scan');
                     const RADIUS_METERS = 100;
                     const METERS_PER_DEG_LAT = 111_320; // approximate
                     const deltaLat = RADIUS_METERS / METERS_PER_DEG_LAT;
@@ -515,21 +555,27 @@ class IssueController {
                         const dist = 6378137 * c;
                         if (dist <= RADIUS_METERS) {
                             nearbyCanonical = cand;
-                            console.log('[CTRL createIssue] MERGE: Fallback bounding-box+Haversine matched canonical', cand._id.toString(), 'distance(m)=', Math.round(dist));
+                            log('[CTRL createIssue] MERGE: Fallback bounding-box+Haversine matched canonical', cand._id.toString(), 'distance(m)=', Math.round(dist));
                             break;
                         }
                     }
                     if (!nearbyCanonical) {
-                        console.log('[CTRL createIssue] MERGE: Fallback also found none');
+                        log('[CTRL createIssue] MERGE: Fallback also found none');
                     }
                 }
 
                 if (nearbyCanonical) {
-                    console.log('[CTRL createIssue] MERGE: Found canonical issue', nearbyCanonical._id.toString(), 'for new issue', issue._id.toString());
-                    // Update canonical reporters & duplicates
-                    const canonicalChanged = new Set((nearbyCanonical.reporters || []).map(r => r.toString()));
-                    if (!canonicalChanged.has(issue.reportedBy.toString())) {
-                        nearbyCanonical.reporters.push(issue.reportedBy);
+                    log('[CTRL createIssue] MERGE: Found canonical issue', nearbyCanonical._id.toString(), 'for new issue', issue._id.toString());
+                    // Update canonical reporters & duplicates (reporters now objects)
+                    nearbyCanonical.reporters = nearbyCanonical.reporters || [];
+                    const alreadyReporter = nearbyCanonical.reporters.some(r => r.user?.toString() === reporterId);
+                    if (!alreadyReporter) {
+                        nearbyCanonical.reporters.push({ user: reporterId, consent: null, joinedAt: new Date() });
+                        // Auto-increment votes to reflect crowd interest if not already voted
+                        if (!nearbyCanonical.voters.some(v => v.toString() === reporterId)) {
+                            nearbyCanonical.voters.push(reporterId);
+                            nearbyCanonical.votes += 1;
+                        }
                     }
                     nearbyCanonical.duplicates = nearbyCanonical.duplicates || [];
                     nearbyCanonical.duplicates.push(issue._id);
@@ -537,8 +583,13 @@ class IssueController {
 
                     // Mark new issue as merged
                     issue.mergedInto = nearbyCanonical._id;
+                    // Inherit thumbnail if canonical lacks one and new issue has images
+                    if (!nearbyCanonical.thumbnailImage && images.length) {
+                        nearbyCanonical.thumbnailImage = images[0];
+                        await nearbyCanonical.save();
+                    }
                     await issue.save();
-                    console.log('[CTRL createIssue] MERGE: New issue marked duplicate of', nearbyCanonical._id.toString());
+                        log('[CTRL createIssue] MERGE: New issue marked duplicate of', nearbyCanonical._id.toString());
 
                     // Recompute priority on canonical after adding reporter (vote logic separate)
                     try {
@@ -546,9 +597,41 @@ class IssueController {
                         nearbyCanonical.priority = result.priority;
                         nearbyCanonical.priorityReasons = result.reasons;
                         await nearbyCanonical.save();
-                        console.log('[CTRL createIssue] MERGE: Canonical priority recomputed', result);
+                        log('[CTRL createIssue] MERGE: Canonical priority recomputed', result);
                     } catch (e) {
-                        console.log('[CTRL createIssue] MERGE: priority recompute failed', e.message);
+                        warn('[CTRL createIssue] MERGE: priority recompute failed', e.message);
+                    }
+
+                    // Emit consent request ONLY to the new reporter (targeted)
+                    try {
+                        const roomId = reporterId.toString();
+                        let room = req.io?.sockets?.adapter?.rooms?.get(roomId);
+                        log('[CTRL createIssue] MERGE: consent emit targeting room', roomId, 'currentSize=', room ? room.size : 0);
+                        if (!room || room.size === 0) {
+                            // Fallback: scan all sockets for matching handshake userId
+                            for (const [sid, sock] of req.io.sockets.sockets) {
+                                if (sock.handshake?.auth?.userId === roomId || sock.handshake?.query?.userId === roomId) {
+                                    log('[CTRL createIssue] MERGE: Fallback direct emit via socketId', sid);
+                                    sock.emit('issueConsentRequest', {
+                                        issueId: nearbyCanonical._id,
+                                        canonical: true,
+                                        message: 'Do you want to join the discussion group for this existing issue?',
+                                        thumbnail: nearbyCanonical.thumbnailImage || (nearbyCanonical.images?.[0] || null)
+                                    });
+                                    room = req.io?.sockets?.adapter?.rooms?.get(roomId);
+                                    break;
+                                }
+                            }
+                        }
+                        req.io?.to(roomId).emit('issueConsentRequest', {
+                            issueId: nearbyCanonical._id,
+                            canonical: true,
+                            message: 'Do you want to join the discussion group for this existing issue?',
+                            thumbnail: nearbyCanonical.thumbnailImage || (nearbyCanonical.images?.[0] || null)
+                        });
+                        log('[CTRL createIssue] MERGE: Emitted issueConsentRequest to userId', reporterId);
+                    } catch (e) {
+                        warn('[CTRL createIssue] MERGE: consent request emit failed', e.message);
                     }
 
                     // Emit socket event for merged issue and canonical update
@@ -568,10 +651,10 @@ class IssueController {
                         }
                     });
                 } else {
-                    console.log('[CTRL createIssue] MERGE: No nearby canonical issue found (issue remains canonical)');
+                    log('[CTRL createIssue] MERGE: No nearby canonical issue found (issue remains canonical)');
                 }
             } catch (mergeErr) {
-                console.log('[CTRL createIssue] MERGE: merge logic error', mergeErr.message);
+                warn('[CTRL createIssue] MERGE: merge logic error', mergeErr.message);
             }
 
             // Emit real-time notification
@@ -580,13 +663,18 @@ class IssueController {
                 message: `New issue reported: ${title}`
             });
 
+            // Assign thumbnail for brand new canonical if not yet set
+            if (!issue.mergedInto && images.length && !issue.thumbnailImage) {
+                issue.thumbnailImage = images[0];
+            }
+
             // Compute automatic priority & reasons (post-save so _id exists for cluster query)
             try {
                 const { priority: autoPriority, reasons } = await computePriority(issue);
                 issue.priority = autoPriority;
                 issue.priorityReasons = reasons;
                 await issue.save();
-                console.log('[CTRL createIssue] Auto priority computed:', autoPriority, 'reasons:', reasons);
+                log('[CTRL createIssue] Auto priority computed:', autoPriority, 'reasons:', reasons);
             } catch (e) {
                 console.error('[CTRL createIssue] Auto priority computation failed:', e.message);
             }
@@ -596,10 +684,10 @@ class IssueController {
                 message: 'Issue reported successfully',
                 data: issue
             };
-            console.log('[CTRL createIssue] SUCCESS response payload keys:', Object.keys(responsePayload.data.toObject ? responsePayload.data.toObject() : responsePayload.data));
+            log('[CTRL createIssue] SUCCESS response payload keys:', Object.keys(responsePayload.data.toObject ? responsePayload.data.toObject() : responsePayload.data));
             res.status(201).json(responsePayload);
         } catch (error) {
-            console.error('[CTRL createIssue] UNCAUGHT ERROR:', error);
+            error('[CTRL createIssue] UNCAUGHT ERROR:', error);
             res.status(500).json({
                 success: false,
                 error: 'Failed to report issue',
@@ -626,18 +714,18 @@ class IssueController {
 
             let canonical = issue;
             if (issue.mergedInto) {
-                console.log('[getIssueById] Requested duplicate issue', issue._id.toString(), 'redirecting to canonical', issue.mergedInto.toString());
+                log('[getIssueById] Requested duplicate issue', issue._id.toString(), 'redirecting to canonical', issue.mergedInto.toString());
                 canonical = await Issue.findById(issue.mergedInto)
                     .populate('reportedBy', 'name email phone role')
                     .populate('assignedTo.official', 'name email department')
                     .populate('resolutionDetails.resolvedBy', 'name email')
                     .populate('statusHistory.updatedBy', 'name email role')
                     .populate('duplicates', 'title reportedBy createdAt')
-                    .populate('reporters', 'name email role');
+                    .populate('reporters.user', 'name email role');
             } else {
                 canonical = await Issue.findById(issue._id)
                     .populate('duplicates', 'title reportedBy createdAt')
-                    .populate('reporters', 'name email role');
+                    .populate('reporters.user', 'name email role');
             }
 
             // Mark notifications as read if viewed by the issue reporter
@@ -655,11 +743,13 @@ class IssueController {
                     isDuplicate: !!issue.mergedInto,
                     originalRequestedId: issue._id,
                     reportersCount: (canonical.reporters || []).length,
-                    duplicatesCount: (canonical.duplicates || []).length
+                    consentingReportersCount: (canonical.reporters || []).filter(r => r.consent === true).length,
+                    duplicatesCount: (canonical.duplicates || []).length,
+                    thumbnailImage: canonical.thumbnailImage || (canonical.images?.[0] || null)
                 }
             });
         } catch (error) {
-            console.error('Error fetching issue:', error);
+            error('Error fetching issue:', error);
             res.status(500).json({
                 success: false,
                 error: 'Failed to fetch issue',
@@ -752,9 +842,16 @@ class IssueController {
                 });
             }
 
-            const issue = await Issue.findById(id);
+            let issue = await Issue.findById(id);
             if (!issue) {
                 return res.status(404).json({ success: false, error: 'Issue not found' });
+            }
+
+            // If updating a duplicate directly, redirect to canonical
+            if (issue.mergedInto) {
+                log('[updateIssueStatus] Redirecting duplicate', issue._id.toString(), 'to canonical', issue.mergedInto.toString());
+                issue = await Issue.findById(issue.mergedInto);
+                if (!issue) return res.status(404).json({ success: false, error: 'Canonical issue not found' });
             }
 
             const oldStatus = issue.status;
@@ -797,6 +894,25 @@ class IssueController {
             }
 
             await issue.save();
+
+            // Propagate status to duplicates (read-only display consistency) except if status is pending and duplicates may remain individualized
+            if (Array.isArray(issue.duplicates) && issue.duplicates.length) {
+                log('[updateIssueStatus] Propagating status', status, 'to duplicates count=', issue.duplicates.length);
+                await Issue.updateMany(
+                    { _id: { $in: issue.duplicates } },
+                    {
+                        $set: { status },
+                        $push: {
+                            statusHistory: {
+                                status,
+                                updatedBy: req.user.id,
+                                comment: '[canonical-sync] ' + (comment || `Status synced from canonical ${issue._id.toString()}`),
+                                timestamp: new Date()
+                            }
+                        }
+                    }
+                );
+            }
             await issue.populate([
                 { path: 'reportedBy', select: 'name email phone' },
                 { path: 'assignedTo.official', select: 'name email department' },
@@ -845,10 +961,24 @@ class IssueController {
             };
 
             const issues = await Issue.paginate(filter, options);
+            log('[getUserIssues] fetched count=', issues.docs.length, 'user=', req.user.id);
+            // Resolve duplicates to canonical snapshot for display consistency
+            const mapped = [];
+            for (const doc of issues.docs) {
+                if (doc.mergedInto) {
+                    log('[getUserIssues] duplicate found issue=', doc._id.toString(), 'canonical=', doc.mergedInto.toString());
+                    const canonical = await Issue.findById(doc.mergedInto).select('title status priority category createdAt thumbnailImage reporters votes').lean();
+                    if (canonical) {
+                        mapped.push({ ...canonical, originalDuplicateId: doc._id, isDuplicate: true });
+                        continue;
+                    }
+                }
+                mapped.push({ ...doc.toObject(), isDuplicate: false });
+            }
 
             res.json({
                 success: true,
-                data: issues
+                data: { ...issues, docs: mapped }
             });
         } catch (error) {
             console.error('Error fetching user issues:', error);
@@ -877,11 +1007,11 @@ class IssueController {
             if (hasVoted) {
                 issue.voters = issue.voters.filter(id => id.toString() !== userId);
                 issue.votes = Math.max(0, issue.votes - 1);
-                console.log('[voteOnIssue] vote removed user=', userId, 'issue=', issue._id.toString(), 'votes now=', issue.votes);
+                log('[voteOnIssue] vote removed user=', userId, 'issue=', issue._id.toString(), 'votes now=', issue.votes);
             } else {
                 issue.voters.push(userId);
                 issue.votes += 1;
-                console.log('[voteOnIssue] vote added user=', userId, 'issue=', issue._id.toString(), 'votes now=', issue.votes);
+                log('[voteOnIssue] vote added user=', userId, 'issue=', issue._id.toString(), 'votes now=', issue.votes);
             }
 
             const oldPriority = issue.priority;
@@ -889,18 +1019,18 @@ class IssueController {
             let reasons = issue.priorityReasons || [];
             if (issue.priorityAuto) {
                 try {
-                    console.log('[voteOnIssue] recompute start issue=', issue._id.toString(), 'oldPriority=', oldPriority, 'votes=', issue.votes);
+                    log('[voteOnIssue] recompute start issue=', issue._id.toString(), 'oldPriority=', oldPriority, 'votes=', issue.votes);
                     const result = await computePriority(issue);
                     newPriority = result.priority;
                     reasons = result.reasons;
                     issue.priority = newPriority;
                     issue.priorityReasons = reasons;
-                    console.log('[voteOnIssue] recompute done issue=', issue._id.toString(), 'newPriority=', newPriority, 'reasons=', reasons);
+                    log('[voteOnIssue] recompute done issue=', issue._id.toString(), 'newPriority=', newPriority, 'reasons=', reasons);
                 } catch (e) {
                     console.error('[voteOnIssue] computePriority failed:', e.message);
                 }
             }
-                console.log('[voteOnIssue] priorityAuto=false skip recompute issue=', issue._id.toString());
+                log('[voteOnIssue] priorityAuto=false skip recompute issue=', issue._id.toString());
 
             await issue.save();
 
@@ -911,7 +1041,7 @@ class IssueController {
                     newPriority,
                     reasons
                 });
-                console.log('[voteOnIssue] emitted issuePriorityUpdated issue=', issue._id.toString(), 'old=', oldPriority, 'new=', newPriority, 'reasons=', reasons);
+                log('[voteOnIssue] emitted issuePriorityUpdated issue=', issue._id.toString(), 'old=', oldPriority, 'new=', newPriority, 'reasons=', reasons);
             }
 
             res.json({
@@ -925,7 +1055,7 @@ class IssueController {
                 }
             });
         } catch (error) {
-            console.error('Error voting on issue:', error);
+            error('Error voting on issue:', error);
             res.status(500).json({
                 success: false,
                 error: 'Failed to vote on issue',
@@ -1075,7 +1205,7 @@ class IssueController {
                 }
             });
         } catch (error) {
-            console.error('Error fetching issue statistics:', error);
+            error('Error fetching issue statistics:', error);
             res.status(500).json({
                 success: false,
                 error: 'Failed to fetch statistics',

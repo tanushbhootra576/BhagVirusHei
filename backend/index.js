@@ -9,8 +9,14 @@ const http = require('http');
 const socketIo = require('socket.io');
 const path = require('path');
 const { ensureUploadDirs } = require('./utils/ensureUploadDirs');
+const { log, warn } = require('./utils/logger');
+const authRoutes = require('./routes/auth.routes');
+const issueRoutes = require('./routes/issue.routes');
+const analyticsRoutes = require('./routes/analytics.routes');
+const notificationRoutes = require('./routes/notification.routes');
+const alertRoutes = require('./routes/alert.routes');
+const uploadRoutes = require('./routes/upload.routes');
 
-// Initialize Express app
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
@@ -66,12 +72,6 @@ app.use((req, res, next) => {
 });
 
 // Import routes
-const authRoutes = require('./routes/auth.routes');
-const issueRoutes = require('./routes/issue.routes');
-const analyticsRoutes = require('./routes/analytics.routes');
-const notificationRoutes = require('./routes/notification.routes');
-const alertRoutes = require('./routes/alert.routes');
-const uploadRoutes = require('./routes/upload.routes');
 
 // API routes
 app.use('/api/auth', authRoutes);
@@ -88,18 +88,35 @@ app.get('/', (req, res) => {
 
 // Socket.io connection
 io.on('connection', (socket) => {
-    console.log('New client connected');
+    log('New client connected socketId=', socket.id, 'auth=', socket.handshake?.auth, 'query=', socket.handshake?.query);
+    try {
+        const userId = socket.handshake.auth?.userId || socket.handshake.query?.userId;
+        if (userId) {
+            socket.join(userId.toString());
+            log('[socket] joined personal room for user', userId);
+        }
+        socket.on('registerUser', (uid) => {
+            if (uid) {
+                socket.join(uid.toString());
+                log('[socket] registerUser -> joined personal room', uid);
+            }
+        });
+    } catch (e) {
+        warn('[socket] error establishing personal room', e.message);
+    }
 
     socket.on('disconnect', () => {
-        console.log('Client disconnected');
+        log('Client disconnected socketId=', socket.id);
     });
 
     // Handle live updates for issues
     socket.on('newIssue', (data) => {
+        log('[socket] newIssue relay issueId=', data?.issue?._id);
         io.emit('issueUpdate', data);
     });
 
     socket.on('statusChange', (data) => {
+        log('[socket] statusChange relay issueId=', data?.issueId, 'status=', data?.status);
         io.emit('issueUpdate', data);
     });
 });
