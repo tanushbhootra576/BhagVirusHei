@@ -68,6 +68,9 @@ router.get('/all', authenticate, authorizeGovernment, issueController.getAllIssu
 // Retroactive clustering (dedupe existing issues) - government only
 router.post('/cluster/retroactive', authenticate, authorizeGovernment, issueController.retroactiveCluster);
 
+// Reporter consent for merged issue participation
+router.post('/:id/consent', authenticate, issueController.recordConsent);
+
 // Temporary debug route (remove in production): returns raw issue docs
 router.get('/debug/raw', authenticate, authorizeGovernment, async (req, res) => {
     try {
@@ -77,6 +80,59 @@ router.get('/debug/raw', authenticate, authorizeGovernment, async (req, res) => 
         res.json({ success: true, count: issues.length, data: issues });
     } catch (e) {
         console.error('[DEBUG /issues/debug/raw] error:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Debug reporters & duplicates for a specific issue (canonical resolution)
+router.get('/debug/:id/reporters', authenticate, authorizeGovernment, async (req, res) => {
+    try {
+        const Issue = require('../models/Issue');
+        let issue = await Issue.findById(req.params.id).select('_id mergedInto');
+        if (!issue) return res.status(404).json({ success: false, error: 'Issue not found' });
+        if (issue.mergedInto) issue = await Issue.findById(issue.mergedInto).select('_id');
+        const canonical = await Issue.findById(issue._id)
+            .populate('reporters.user', 'name email')
+            .populate('duplicates', 'reportedBy createdAt')
+            .lean();
+        res.json({
+            success: true,
+            canonicalId: canonical._id,
+            reporters: canonical.reporters,
+            duplicates: canonical.duplicates,
+            votes: canonical.votes,
+            voters: canonical.voters
+        });
+    } catch (e) {
+        console.error('[DEBUG /issues/debug/:id/reporters] error:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Debug user issues mapping (government) - show canonical resolution
+router.get('/debug/user/:userId/issues', authenticate, authorizeGovernment, async (req, res) => {
+    try {
+        const Issue = require('../models/Issue');
+        const userId = req.params.userId;
+        const issues = await Issue.find({ reportedBy: userId }).select('_id title mergedInto category status createdAt').lean();
+        const out = [];
+        for (const iss of issues) {
+            let canonicalId = iss._id;
+            if (iss.mergedInto) {
+                canonicalId = iss.mergedInto;
+            }
+            out.push({
+                issueId: iss._id,
+                mergedInto: iss.mergedInto || null,
+                canonicalId,
+                status: iss.status,
+                category: iss.category,
+                createdAt: iss.createdAt
+            });
+        }
+        res.json({ success: true, count: out.length, data: out });
+    } catch (e) {
+        console.error('[DEBUG /issues/debug/user/:userId/issues] error:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });

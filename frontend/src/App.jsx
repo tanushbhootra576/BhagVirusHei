@@ -5,6 +5,8 @@ import { ToastProvider } from './context/ToastContext';
 import { ThemeProvider } from './context/ThemeContext';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import Header from './components/layout/Header';
+import ConsentPrompts from './components/issues/ConsentPrompts.jsx';
+import { SocketProvider } from './context/SocketContext.jsx';
 
 // Pages
 import Home from './pages/home/Home';
@@ -49,7 +51,9 @@ const App = () => {
       <ThemeProvider>
         <ToastProvider>
           <AuthProvider>
-          <Routes>
+            <SocketProvider>
+              <ConsentPrompts />
+              <Routes>
             {/* Public Routes */}
             <Route path="/" element={<Home />} />
             <Route path="/login" element={<Login />} />
@@ -164,7 +168,8 @@ const App = () => {
             {/* Error Routes */}
             <Route path="/404" element={<NotFound />} />
             <Route path="*" element={<Navigate to="/404" replace />} />
-          </Routes>
+              </Routes>
+            </SocketProvider>
           </AuthProvider>
         </ToastProvider>
       </ThemeProvider>

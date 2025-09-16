@@ -79,7 +79,7 @@ const AllIssues = () => {
                           <td>{issue.date || issue.createdAt}</td>
                           <td>{issue.status}</td>
                           <td>{issue.category}</td>
-                          <td>{issue.priority}</td>
+                          <td>{issue.priority}{/* Chat panel accessible from citizen My Issues modal currently */}</td>
                         </tr>
                       ))}
                     </tbody>

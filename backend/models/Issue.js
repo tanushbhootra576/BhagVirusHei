@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const mongoosePaginate = require('mongoose-paginate-v2');
+const { log } = require('../utils/logger');
 
 const issueSchema = new mongoose.Schema({
     title: {
@@ -73,7 +74,7 @@ const issueSchema = new mongoose.Schema({
     },
     votes: {
         type: Number,
-        default: 0
+        default: 1
     },
     voters: [{
         type: mongoose.Schema.Types.ObjectId,
@@ -150,20 +151,34 @@ const issueSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// Duplicate clustering support
+// Duplicate clustering + reporter consent support
 // mergedInto: if set, this issue is a duplicate and should not appear independently in government listings
+// reporters: now richer objects capturing consent for chat/community participation
 issueSchema.add({
     mergedInto: { type: mongoose.Schema.Types.ObjectId, ref: 'Issue', index: true },
-    duplicates: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Issue' }], // only populated on canonical root
-    reporters: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }] // aggregated distinct reporters for canonical issue
+    duplicates: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Issue' }],
+    // Backwards compatibility note: legacy data stored reporters as ObjectId[]; migration will convert.
+    reporters: [{
+        user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        consent: { type: Boolean, default: true }, // creator auto-consents; merged reporters start as null until response
+        joinedAt: { type: Date, default: Date.now }
+    }],
+    thumbnailImage: { type: String } // first reporter's first image becomes thumbnail
 });
 
 // Ensure reporters includes original reporter on save (only for new docs)
 issueSchema.pre('save', function(next) {
     if (this.isNew) {
+        log('[IssueModel][pre-save] New issue initialization _id=', this._id?.toString());
+        // Upgrade legacy reporters array if provided externally
+        if (Array.isArray(this.reporters) && this.reporters.length && typeof this.reporters[0] === 'string') {
+            log('[IssueModel][pre-save] Migrating legacy reporters array length=', this.reporters.length);
+            this.reporters = this.reporters.map(id => ({ user: id, consent: true, joinedAt: new Date() }));
+        }
         if (!Array.isArray(this.reporters)) this.reporters = [];
-        if (this.reportedBy && !this.reporters.some(r => r.toString() === this.reportedBy.toString())) {
-            this.reporters.push(this.reportedBy);
+        if (this.reportedBy && !this.reporters.some(r => r.user?.toString() === this.reportedBy.toString())) {
+            log('[IssueModel][pre-save] Adding creator to reporters user=', this.reportedBy.toString());
+            this.reporters.push({ user: this.reportedBy, consent: true, joinedAt: new Date() });
         }
     }
     next();

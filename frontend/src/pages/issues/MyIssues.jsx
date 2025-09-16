@@ -15,6 +15,7 @@ import {
     IconRefresh,
     IconPlus
 } from '../../components/common/Icons';
+import IssueChatPanel from '../../components/issues/IssueChatPanel.jsx';
 
 const MyIssues = () => {
     const { user } = useAuth();
@@ -505,6 +506,11 @@ const MyIssues = () => {
                                         </div>
                                     )}
                                 </div>
+                            </div>
+
+                            <div className="chat-section">
+                                <h4>Discussion</h4>
+                                <IssueChatPanel issueId={selectedIssue.id || selectedIssue._id} assumeReporter={true} />
                             </div>
                         </div>
 
