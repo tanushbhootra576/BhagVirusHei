@@ -1,0 +1,46 @@
+/* Mobile Menu Toggle Button */
+.mobile-menu-toggle {
+    display: none;
+    position: fixed;
+    top: 70px;
+    left: 10px;
+    width: 40px;
+    height: 40px;
+    background-color: var(--primary-color);
+    border: none;
+    border-radius: 50%;
+    z-index: 100;
+    cursor: pointer;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    padding: 0;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+}
+
+.mobile-menu-toggle span {
+    display: block;
+    width: 20px;
+    height: 2px;
+    background-color: white;
+    margin: 2px 0;
+    transition: transform 0.3s ease;
+}
+
+@media (max-width: 576px) {
+    .mobile-menu-toggle {
+        display: flex;
+    }
+
+    .sidebar.open+.mobile-menu-toggle span:nth-child(1) {
+        transform: translateY(6px) rotate(45deg);
+    }
+
+    .sidebar.open+.mobile-menu-toggle span:nth-child(2) {
+        opacity: 0;
+    }
+
+    .sidebar.open+.mobile-menu-toggle span:nth-child(3) {
+        transform: translateY(-6px) rotate(-45deg);
+    }
+}

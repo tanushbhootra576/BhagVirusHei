@@ -1,0 +1,64 @@
+:root[data-theme="light"] {
+    --primary-color: #2563eb;
+    --primary-color-dark: #1d4ed8;
+    --primary-color-light: rgba(37, 99, 235, 0.1);
+    --text-primary: #1f2937;
+    --text-secondary: #6b7280;
+    --bg-gradient: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+    --card-bg: rgba(255, 255, 255, 0.9);
+    --input-bg: #ffffff;
+    --border-color: #e5e7eb;
+    --button-text: #ffffff;
+    --error-color: #dc2626;
+    --google-button-bg: #ffffff;
+    --google-button-hover-bg: #f9fafb;
+}
+
+:root[data-theme="dark"] {
+    --primary-color: #3b82f6;
+    --primary-color-dark: #2563eb;
+    --primary-color-light: rgba(59, 130, 246, 0.1);
+    --text-primary: #f3f4f6;
+    --text-secondary: #9ca3af;
+    --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    --card-bg: rgba(17, 24, 39, 0.8);
+    --input-bg: rgba(17, 24, 39, 0.8);
+    --border-color: #374151;
+    --button-text: #ffffff;
+    --error-color: #ef4444;
+    --google-button-bg: rgba(31, 41, 55, 0.8);
+    --google-button-hover-bg: rgba(31, 41, 55, 1);
+}
+
+/* Apply smooth transitions for theme changes */
+* {
+    transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+}
+
+/* Reset default styles */
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background: var(--bg-gradient);
+    min-height: 100vh;
+}
+
+/* Global styles */
+.input-error {
+    border-color: var(--error-color) !important;
+}
+
+.alert {
+    padding: 1rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+}
+
+.alert-danger {
+    background: rgba(220, 38, 38, 0.1);
+    color: var(--error-color);
+    border: 1px solid rgba(220, 38, 38, 0.2);
+}

@@ -1,0 +1,120 @@
+# Project-wide ignores
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment variables (project-wide)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+**/.env
+**/.env.local
+
+# Firebase credentials and service account keys
+*firebase*adminsdk*.json
+serviceAccountKey.json
+firebase-config.json
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs (project-wide)
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Upload directories
+uploads/
+**/uploads/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+
+# Build artifacts
+/frontend/dist/
+/frontend/build/
+/backend/build/
+/backend/dist/
+
+# Documentation
+/docs/.vuepress/dist/
+
+# Coverage reports
+coverage/
+
+# Database dumps
+*.sql
+*.dump
+
+# Backup files
+*.bak
+*.backup
+
+# Archive files
+*.zip
+*.tar.gz
+*.rar
+
+# IDE files
+*.iml
+*.ipr
+*.iws
+
+# JetBrains
+.idea/
+*.iml
+out/
+
+# VS Code
+.vscode/
+!.vscode/extensions.json
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Atom
+.atom/
+
+# Package managers
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Git
+*.orig
+
+# Deployment
+.vercel
+.netlify
+.heroku
+
+# CI/CD
+.github/workflows/secrets.yml
+config.bat
