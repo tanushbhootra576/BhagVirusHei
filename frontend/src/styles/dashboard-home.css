@@ -1,0 +1,96 @@
+/* Lightweight polish + skeletons for Dashboard home */
+
+.dashboard-header {
+    margin-bottom: var(--spacing-xl);
+}
+
+/* Skeleton base */
+.skeleton {
+    position: relative;
+    overflow: hidden;
+}
+
+.skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, rgba(0, 0, 0, 0.03) 25%, rgba(0, 0, 0, 0.06) 37%, rgba(0, 0, 0, 0.03) 63%);
+    animation: shimmer 1.4s infinite;
+}
+
+@keyframes shimmer {
+    0% {
+        transform: translateX(-100%);
+    }
+
+    100% {
+        transform: translateX(100%);
+    }
+}
+
+.skeleton-line {
+    height: 12px;
+    background: var(--background-secondary);
+    border-radius: var(--border-radius-sm);
+    margin: 8px 0;
+}
+
+.skeleton-circle {
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    background: var(--background-secondary);
+    margin-bottom: 12px;
+}
+
+.w-30 {
+    width: 30%;
+}
+
+.w-40 {
+    width: 40%;
+}
+
+.w-50 {
+    width: 50%;
+}
+
+.w-60 {
+    width: 60%;
+}
+
+.w-70 {
+    width: 70%;
+}
+
+.w-80 {
+    width: 80%;
+}
+
+/* Notification unread state */
+.notification-item.unread {
+    background-color: rgba(0, 0, 0, 0.025);
+    border-left: 3px solid var(--primary-color);
+}
+
+.loading-indicator {
+    padding: var(--spacing-lg);
+    text-align: center;
+}
+
+/* Keep style harmony with existing dashboard.css */
+.stats-grid {
+    margin-bottom: var(--spacing-xl);
+}
+
+.issue-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+}
+
+.issue-actions {
+    margin-top: var(--spacing-md);
+    display: flex;
+    gap: var(--spacing-sm);
+}

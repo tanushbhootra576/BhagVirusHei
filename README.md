@@ -1,0 +1,254 @@
+# CivicPulse
+
+CivicPulse is a comprehensive platform designed to improve civic engagement by providing a streamlined system for citizens to report issues and for government officials to manage and resolve them efficiently.
+
+## Project Structure
+
+This repository contains both the frontend and backend components of the CivicPulse application:
+
+- **Frontend**: React application with user interfaces for citizens and government officials
+- **Backend**: Express.js API server with MongoDB database integration
+
+## Key Features
+
+### Citizen Portal
+- Secure authentication and profile management
+- Intuitive issue reporting with location, category, and media uploads
+- Real-time issue tracking with status updates and timelines
+- Notification system for issue updates and alerts
+- Dashboard for viewing all reported issues
+
+### Government Portal
+- Comprehensive issue management dashboard
+- Analytics and visualization of civic issues by category, location, and status
+- Alert creation and management for emergency notifications
+- Department assignment and accountability tracking
+- Resolution documentation and verification
+- Performance metrics and efficiency reporting
+
+### Real-time Collaboration Additions
+- Automatic duplicate clustering (100m radius + same category)
+- Reporter consent workflow for merged issues
+- Per-issue real-time chat (government + consenting reporters)
+- Priority recalculation influenced by clustered reporter count
+
+## Real-time Chat & Consent Flow
+
+When a newly reported issue is detected as a near-duplicate of an existing canonical issue, it is merged. The new reporter is added to the canonical issue's `reporters` array with `consent: null` and receives a targeted `issueConsentRequest` Socket.IO event (personal room keyed by their userId). They must accept to participate in the chat.
+
+Event Summary (Socket.IO):
+- `issueConsentRequest` -> `{ issueId }`
+- `issueConsentUpdated` -> `{ issueId, consent }`
+- `issueChatMessage` -> `{ issueId, message }`
+
+REST Endpoints:
+- `POST /api/issues/:id/consent { accept: boolean }`
+- `GET /api/issues/:id/chat?page=&limit=`
+- `POST /api/issues/:id/chat { message }`
+
+Frontend Integration Overview:
+- `SocketContext` (React) manages connection using `user.id` (auth) and keeps in-memory state: pending consent requests, consent status, and live message buffers.
+- `IssueChatPanel` component fetches historical messages (paginated) and merges real-time ones. Input is enabled if role is government or consent true.
+
+Testing Steps:
+1. Open two browsers (citizen A, government B).
+2. Citizen A reports an issue; then reports another close duplicate (same category + location) to trigger merge.
+3. Check citizen A console for `[Socket] issueConsentRequest` log.
+4. POST consent acceptance; receive `issueConsentUpdated` event.
+5. Open chat panel; exchange messages and observe real-time updates.
+
+Troubleshooting:
+- If no events: ensure backend log shows `[socket] joined personal room` for the userId.
+- Confirm frontend `.env` sets `VITE_API_URL` matching backend base (e.g., `http://localhost:5000/api`).
+- Check that the socket base URL (derived by stripping `/api`) is reachable (no CORS errors).
+
+
+## Technical Architecture
+
+### Frontend (React.js)
+- React with React Router for navigation
+- Context API for state management
+- Modern CSS with responsive design
+- Role-based access control
+- Interactive data visualizations
+- Dark/Light theme options
+- Mock service layer for development
+
+### Backend (Express.js)
+- RESTful API endpoints
+- MongoDB database integration
+- JWT authentication
+- File upload functionality
+- Data analytics processing
+- Email notification service
+- Issue categorization and assignment logic
+
+## Getting Started
+
+### Prerequisites
+- Node.js (v14 or higher)
+- npm (v6 or higher)
+- MongoDB (local or Atlas connection)
+
+### Installation and Setup
+
+1. Clone the repository
+   ```bash
+   git clone https://github.com/your-username/civic-pulse.git
+   cd civic-pulse
+   ```
+
+2. Set up the backend
+   ```bash
+   cd backend
+   npm install
+   # Create a .env file with your environment variables (see .env.example)
+   npm run dev
+   ```
+
+3. Set up the frontend
+   ```bash
+   cd ../frontend
+   npm install
+   # Create a .env file if needed
+   npm run dev
+   ```
+
+4. Access the application
+   - Frontend: http://localhost:5173 (or the port shown in terminal)
+   - Backend API: http://localhost:5000/api
+
+## Development
+
+### Using Mock Data
+For development without a backend connection, the frontend includes a comprehensive mock data layer. Enable it by setting:
+```
+VITE_USE_MOCK=true
+```
+
+### Seeding Test Data
+To populate the database with test data:
+```bash
+cd backend
+npm run seed
+```
+
+## Deployment
+
+### Frontend Deployment
+Build the optimized frontend:
+```bash
+cd frontend
+npm run build
+```
+
+### Backend Deployment
+Prepare the backend for production:
+```bash
+cd backend
+npm run build
+```
+
+### Media Storage (Cloudinary Integration)
+
+The backend is configured to upload issue images directly to Cloudinary (no local `uploads/` persistence). Ensure the following environment variables are set in `backend/.env` (or your hosting provider dashboard):
+
+```
+CLOUDINARY_CLOUD_NAME=your_cloud_name
+CLOUDINARY_API_KEY=your_api_key
+CLOUDINARY_API_SECRET=your_api_secret
+```
+
+How it works:
+- Multer now uses in-memory storage (buffers) for incoming images.
+- Each image buffer is streamed to Cloudinary (`folder: issues`).
+- The returned `secure_url` values are stored in the `Issue.images` array.
+- Voice notes or other binary assets are currently not uploaded (placeholder null). Add similar logic with `resource_type: 'video'` or `raw` if needed.
+
+If any upload fails, that specific image is skipped; the request still succeeds as long as at least the required issue fields validate.
+
+Optional improvements (not yet implemented):
+- Add transformation parameters (e.g., width limit, quality auto)
+- Separate folders by environment (`issues/dev`, `issues/prod`)
+- Upload audio/voiceNote to Cloudinary (resource_type: 'video')
+- Generate and store thumbnail URLs
+
+Example minimal `.env` for backend:
+```
+PORT=5000
+MONGODB_URI=mongodb+srv://...
+JWT_SECRET=replace_me
+FRONTEND_URL=http://localhost:5173
+CLOUDINARY_CLOUD_NAME=demo
+CLOUDINARY_API_KEY=1234567890
+CLOUDINARY_API_SECRET=shhhhh
+```
+
+### Direct Frontend-to-Cloudinary Upload Flow
+
+The backend also supports a "pre-uploaded URL" pattern so the frontend (Vercel) can upload images directly to Cloudinary, then only send the resulting URLs to the API. This reduces backend bandwidth and avoids multipart parsing issues on serverless platforms.
+
+Flow:
+1. Frontend requests a signature: `GET /api/uploads/signature` (auth required)
+2. Backend responds with `{ timestamp, folder, signature, cloudName, apiKey }`
+3. Frontend builds a `FormData` with:
+    - `file`: the File blob
+    - `api_key`: from step 2
+    - `timestamp`: from step 2
+    - `folder`: from step 2
+    - `signature`: from step 2
+4. Frontend POSTs to `https://api.cloudinary.com/v1_1/<cloudName>/image/upload`
+5. Cloudinary returns JSON with `secure_url`
+6. Frontend submits issue to `/api/issues` with body field `images` (array or JSON string) containing those `secure_url` values (no multipart needed unless also sending voice note later).
+
+Backend Handling:
+- If `req.files.images` exists, it still uploads buffers server-side (legacy path)
+- Else if `req.body.images` or `req.body.imageUrls` exists, those URLs are validated (basic http/https check) and stored directly.
+
+Example frontend payload when using direct URLs (application/json):
+```json
+{
+   "title": "Broken street light",
+   "description": "Lamp post flickers every night",
+   "category": "Street Lighting",
+   "priority": "low",
+   "location": {"coordinates": [77.5946, 12.9716], "address": "MG Road"},
+   "images": [
+      "https://res.cloudinary.com/demo/image/upload/v1690000000/issues/abc123.jpg",
+      "https://res.cloudinary.com/demo/image/upload/v1690000000/issues/def456.jpg"
+   ]
+}
+```
+
+Security Notes:
+- Signature route is auth-protected; revoke keys in Cloudinary dashboard if compromised.
+- Consider limiting file size client-side before upload.
+- For stricter validation, add server-side domain whitelisting (only allow URLs starting with `https://res.cloudinary.com/<your_name>/`).
+
+## Documentation
+
+For detailed documentation on API endpoints and frontend components, see:
+- [API Documentation](docs/api.md)
+- [Frontend Documentation](docs/frontend.md)
+
+## Contributing
+
+Contributions are welcome! Please follow these steps:
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgements
+
+- The CivicPulse team
+- Government of India design system guidelines
+- All contributors who have helped shape this project
+#   K y u D e k h R a h a H a i B h a i 
+ 
+ 

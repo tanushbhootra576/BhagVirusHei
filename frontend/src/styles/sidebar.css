@@ -1,0 +1,57 @@
+/* Sidebar base */
+.sidebar {
+    background: #fff;
+    border-right: 1px solid #eee;
+    transition: width 0.3s ease;
+    overflow: hidden;
+}
+
+/* Default: collapsed (mobile/tablet) */
+.sidebar {
+    width: 60px;
+}
+
+.sidebar.open {
+    width: 220px;
+    /* expanded */
+}
+
+/* Text inside links */
+.sidebar .sidebar-nav ul li a {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 15px;
+    color: #333;
+    text-decoration: none;
+    font-size: 14px;
+}
+
+.sidebar .sidebar-nav ul li a .icon {
+    flex-shrink: 0;
+    width: 20px;
+    display: flex;
+    justify-content: center;
+}
+
+.sidebar .sidebar-nav ul li a span:last-child {
+    opacity: 0;
+    white-space: nowrap;
+    transition: opacity 0.2s ease;
+}
+
+/* Expanded shows text */
+.sidebar.open .sidebar-nav ul li a span:last-child {
+    opacity: 1;
+}
+
+/* ✅ On large screens, force sidebar always open */
+@media (min-width: 1024px) {
+    .sidebar {
+        width: 220px !important;
+    }
+
+    .sidebar .sidebar-nav ul li a span:last-child {
+        opacity: 1 !important;
+    }
+}
